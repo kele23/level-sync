@@ -2,7 +2,7 @@
 
 _!Repository under development!_
 
-Sync system between multiple LevelDB instances
+Sync multiple LevelDB instances
 
 ## Usage
 
