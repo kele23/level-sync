@@ -1,5 +1,6 @@
-import { AbstractBatchOperation, AbstractLevel } from 'abstract-level';
+import { AbstractBatchOperation } from 'abstract-level';
 import EventEmitter, { once } from 'events';
+import { Level } from 'level';
 import { AbstractConnection } from './connections/abstract-connection';
 import { ExportLog } from './interfaces/logged';
 import {
@@ -12,7 +13,6 @@ import {
 } from './interfaces/messages';
 import { LevelLogged } from './level-logged';
 import { getSequence } from './utils/sequence';
-import { Level } from 'level';
 
 export class SyncManager {
     private _db: LevelLogged;

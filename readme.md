@@ -4,7 +4,6 @@ _!Repository under development!_
 
 Sync system between multiple LevelDB instances
 
-
 ## Usage
 
 ```typescript
@@ -30,7 +29,7 @@ sync.isScheduled(); // true if there is a sync scheduled
 sync.stopSync();
 ```
 
-## Types of connections
+### Types of connections
 
 #### P2P Connection based on PeerJS
 
@@ -61,7 +60,18 @@ server.onReceive(async (data) => {
 });
 ```
 
+## Conflicts
+
+When a Master - Master replication occurs it is always possible for conflicts to occur.
+
+Conflicts can arise in various situations, the most common is that both DBs have modified the same key and therefore it is necessary to understand which of the two versions to keep. For the moment, conflicts are resolved by maintaining the "remote" version, in order to be as simple as possible.
+
+As soon as possible we will also try to implement a custom management.
 
 ## Next Steps
-- [ ] Verify AbstractLevel implementation
-- [ ] Create test suite 
+
+-   [ ] Verify AbstractLevel implementation
+-   [ ] Create test suite
+-   [ ] Versioning
+-   [ ] Log cleaning
+-   [ ] Reduce communication overhead
