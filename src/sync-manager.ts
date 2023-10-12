@@ -19,6 +19,7 @@ export class SyncManager {
     private _connection: AbstractConnection;
     private _state: string;
     private _ee: EventEmitter;
+    private _intervalId?: any;
 
     constructor(db: LevelLogged, connection: AbstractConnection) {
         this._db = db;
@@ -47,11 +48,27 @@ export class SyncManager {
         await once(this._ee, 'complete');
     }
 
-    async doSync() {
+    async doSync(interval?: number) {
         if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
 
-        await this.doPull();
-        await this.doPush();
+        if (!interval) {
+            await this.doPull();
+            await this.doPush();
+        } else {
+            this._intervalId = setInterval(async () => {
+                await this.doPull();
+                await this.doPush();
+            }, interval * 1000);
+        }
+    }
+
+    stopSync() {
+        if (this._intervalId) clearInterval(this._intervalId);
+        this._intervalId = undefined;
+    }
+
+    isScheduled() {
+        return this._intervalId ? true : false;
     }
 
     _handleReceive(data: any) {
