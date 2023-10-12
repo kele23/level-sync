@@ -1,5 +1,10 @@
 # LEVEL SYNC
 
+_!Repository under development!_
+
+Sync system between multiple LevelDB instances
+
+
 ## Usage
 
 ```typescript
@@ -55,3 +60,8 @@ server.onReceive(async (data) => {
     return await connection.incomingReceive(data);
 });
 ```
+
+
+## Next Steps
+- [ ] Verify AbstractLevel implementation
+- [ ] Create test suite 
