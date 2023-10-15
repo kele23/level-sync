@@ -16,9 +16,9 @@ import {
     OpenOptions,
     PutOptions,
 } from 'level';
-import { nanoid } from 'nanoid';
-import { getSequence } from './utils/sequence';
+import UUID from 'pure-uuid';
 import { LogRecord } from './interfaces/logged';
+import { getSequence } from './utils/sequence';
 
 export class LevelLogged extends AbstractLevel<any, string, any> {
     private _id: string;
@@ -37,9 +37,14 @@ export class LevelLogged extends AbstractLevel<any, string, any> {
                 view: true,
             },
         });
-        this._id = nanoid();
+        this._id = new UUID(4).format('std'); // default id
         this._db = db;
-        this._sequence = getSequence();
+        this._sequence = getSequence(); // zero
+
+        // run init in next tick, after open
+        this.nextTick(() => {
+            this._init();
+        });
     }
 
     ////////////////////////////////// LEVEL
@@ -52,36 +57,39 @@ export class LevelLogged extends AbstractLevel<any, string, any> {
         return this._sequence;
     }
 
+    async _init() {
+        try {
+            this._id = await this._db.get('__id__');
+        } catch (error) {
+            await this._db.put('__id__', this._id); // save id on db
+        }
+
+        // create levels
+        this._logs = this._db.sublevel<string, LogRecord>('__logs__', { valueEncoding: 'json' });
+        this._logsIndex = this._db.sublevel<string, string>('__logs_index__', {
+            valueEncoding: 'utf8',
+        });
+        this._friends = this._db.sublevel<string, string>('__friends__', {
+            valueEncoding: 'utf8',
+        });
+
+        // load starting sequence
+        try {
+            for await (const key of this._logs.keys({ limit: 1, reverse: true })) {
+                this._sequence = key;
+            }
+        } catch (error) {
+            console.warn('Error', error);
+        }
+
+        // complete initialization
+        this.emit('initialized');
+    }
+
     _open(_options: OpenOptions, callback: NodeCallback<void>): void {
-        (async () => {
-            // load previous id
-            try {
-                this._id = await this._db.get('__id__');
-            } catch (error) {
-                await this._db.put('__id__', this._id); // save id on db
-            }
-
-            // create levels
-            this._logs = this._db.sublevel<string, LogRecord>('__logs__', { valueEncoding: 'json' });
-            this._logsIndex = this._db.sublevel<string, string>('__logs_index__', {
-                valueEncoding: 'utf8',
-            });
-            this._friends = this._db.sublevel<string, string>('__friends__', {
-                valueEncoding: 'utf8',
-            });
-
-            // generate starting sequence or load from log
-            this._sequence = getSequence(); // zero
-            try {
-                for await (const key of this._logs.keys({ limit: 1, reverse: true })) {
-                    this._sequence = key;
-                }
-            } catch (error) {
-                console.warn('Error', error);
-            }
-
+        this.once('initialized', () => {
             this.nextTick(callback);
-        })();
+        });
     }
 
     _close(callback: NodeCallback<void>) {

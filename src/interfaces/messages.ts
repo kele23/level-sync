@@ -1,14 +1,16 @@
 import { RangeOptions } from 'abstract-level/types/interfaces';
 import { ExportLog } from './logged';
 
-export interface Message {}
+export interface Message {
+    transaction: string;
+}
 
 export interface Request extends Message {}
 
 export interface Response extends Message {}
 
 ////////// ERROR
-export interface ErrorMessage extends Response {
+export interface ErrorResponse extends Response {
     message: string;
 }
 
@@ -36,9 +38,11 @@ export interface PullRequest extends Request {
     keys: string[];
 }
 
+export interface PullData {
+    key: string;
+    value: any;
+}
+
 export interface PullResponse extends Response {
-    data: {
-        key: string;
-        value: any;
-    }[];
+    data: PullData[];
 }

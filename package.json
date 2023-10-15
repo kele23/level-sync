@@ -28,6 +28,7 @@
     },
     "devDependencies": {
         "@types/node": "^20.8.2",
+        "@types/uuid": "^9.0.5",
         "@typescript-eslint/eslint-plugin": "^6.7.4",
         "eslint": "^8.50.0",
         "eslint-config-prettier": "^9.0.0",
@@ -43,12 +44,12 @@
     },
     "peerDependencies": {
         "level": "^8.0.0",
-        "peerjs": "^1.5.1"
+        "peerjs": "^1.5.1",
+        "pure-uuid": "^1.8.1"
     },
     "dependencies": {
         "abstract-level": "^1.0.3",
         "events": "^3.3.0",
-        "nanoid": "^5.0.1",
         "seq-lex": "^1.0.2"
     }
 }

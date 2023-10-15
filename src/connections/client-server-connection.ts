@@ -1,5 +1,6 @@
 import EventEmitter, { once } from 'events';
 import { AbstractConnection } from './abstract-connection';
+import { nextTick } from '../utils/next-tick';
 
 /**
  * CLIENT ->  SEND than RECEIVE
@@ -18,11 +19,7 @@ export class ClientConnection extends AbstractConnection {
     async send(data: any): Promise<void> {
         console.debug('>>>>>> ', data);
         const response = await this._sender(data);
-        if (response.status == 200) {
-            this._handleReceive(response.data);
-        } else {
-            throw 'Cannot receive data';
-        }
+        this._handleReceive(response);
     }
 
     onReceive(fn: (data: any) => void): void {
@@ -52,8 +49,11 @@ export class ServerConnection extends AbstractConnection {
     }
 
     async incomingReceive(data: any) {
-        this._handleReceive(data);
-        return await once(this._ee, 'send');
+        nextTick(() => {
+            this._handleReceive(data);
+        });
+        const [dataR] = await once(this._ee, 'send');
+        return dataR;
     }
 
     async send(data: any): Promise<void> {

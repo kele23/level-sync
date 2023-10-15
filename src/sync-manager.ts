@@ -8,11 +8,14 @@ import {
     DiscoveryResponse,
     FetchRequest,
     FetchResponse,
+    PullData,
     PullRequest,
     PullResponse,
 } from './interfaces/messages';
 import { LevelLogged } from './level-logged';
 import { getSequence } from './utils/sequence';
+import { nextTick } from 'process';
+import UUID from 'pure-uuid';
 
 export class SyncManager {
     private _db: LevelLogged;
@@ -31,20 +34,27 @@ export class SyncManager {
         this._ee = new EventEmitter();
     }
 
-    async doPull() {
-        if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
+    async doPull(transaction?: string) {
+        if (this._state != 'WAIT_DISCOVERY')
+            throw 'Starting state not valid, maybe another process is in progress you need to complete it or abort';
 
-        this._connection.send({} as DiscoveryRequest);
-        this._state = 'WAIT_START';
+        if (!transaction) transaction = new UUID(4).format('std');
+        nextTick(() => {
+            this._connection.send({ transaction } as DiscoveryRequest);
+            this._state = 'WAIT_START';
+        });
         await once(this._ee, 'complete');
     }
 
     // push is a pull, started from the peer that not initialized the connection
-    async doPush() {
+    async doPush(transaction?: string) {
         if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
 
-        this._connection.send({ push: true } as DiscoveryRequest);
-        this._state = 'WAIT_PUSH_DISCOVERY'; // remain in discovery ( other type )
+        if (!transaction) transaction = new UUID(4).format('std');
+        nextTick(() => {
+            this._connection.send({ transaction, push: true } as DiscoveryRequest);
+            this._state = 'WAIT_PUSH_DISCOVERY'; // remain in discovery ( other type )
+        });
         await once(this._ee, 'complete');
     }
 
@@ -52,12 +62,14 @@ export class SyncManager {
         if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
 
         if (!interval) {
-            await this.doPull();
-            await this.doPush();
+            const transaction = new UUID(4).format('std');
+            await this.doPull(transaction);
+            await this.doPush(transaction);
         } else {
             this._intervalId = setInterval(async () => {
-                await this.doPull();
-                await this.doPush();
+                const transaction = new UUID(4).format('std');
+                await this.doPull(transaction);
+                await this.doPush(transaction);
             }, interval * 1000);
         }
     }
@@ -124,7 +136,7 @@ export class SyncManager {
 
         // get current friend position
         const friendSequence = discoveryResponse.sequence;
-        let gt = undefined;
+        let gt = undefined as string | undefined;
         try {
             gt = await friendsLevel.get(discoveryResponse.levelId);
         } catch (error) {
@@ -140,9 +152,11 @@ export class SyncManager {
         // move friend up
         await friendsLevel.put(discoveryResponse.levelId, friendSequence);
 
-        this._connection.send({
-            options,
-        } as FetchRequest);
+        nextTick(() => {
+            this._connection.send({
+                options,
+            } as FetchRequest);
+        });
         this._state = 'WAIT_FETCH_RESPONSE';
     }
 
@@ -150,14 +164,16 @@ export class SyncManager {
         const fetchRequest = data as FetchRequest;
         const logsLevel = this._db.getLogsLevel();
 
-        const toExport = [];
+        const toExport = [] as ExportLog[];
         for await (const [sequence, value] of logsLevel.iterator(fetchRequest.options)) {
             toExport.push({ sequence, value });
         }
 
-        this._connection.send({
-            logs: toExport,
-        } as FetchResponse);
+        nextTick(() => {
+            this._connection.send({
+                logs: toExport,
+            } as FetchResponse);
+        });
         this._state = 'WAIT_PULL';
     }
 
@@ -243,25 +259,28 @@ export class SyncManager {
             await this._db.directDel(key);
         }
 
-        // request new data
-        this._connection.send({
-            keys: Array.from(keyToTake),
-        } as PullRequest);
+        nextTick(() => {
+            this._connection.send({
+                keys: Array.from(keyToTake),
+            } as PullRequest);
+        });
         this._state = 'WAIT_PULL_RESPONSE';
     }
 
     private async _waitPull(data: any) {
         const pullRequest = data as PullRequest;
 
-        const result = [];
+        const result = [] as PullData[];
         for (const key of pullRequest.keys) {
             const value = await this._db.get(key);
             result.push({ key, value });
         }
 
-        this._connection.send({
-            data: result,
-        } as PullResponse);
+        nextTick(() => {
+            this._connection.send({
+                data: result,
+            } as PullResponse);
+        });
         this._state = 'WAIT_DISCOVERY';
         this._ee.emit('complete', {});
     }
@@ -271,6 +290,9 @@ export class SyncManager {
         for (const { key, value } of pullResponse.data) {
             await this._db.directPut(key, value);
         }
+        nextTick(() => {
+            this._connection.send({});
+        });
         this._state = 'WAIT_DISCOVERY';
         this._ee.emit('complete', {});
     }
