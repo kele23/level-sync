@@ -1,17 +1,19 @@
+import EventEmitter, { once } from 'events';
 import Peer, { DataConnection } from 'peerjs';
+import { nextTick } from '../utils/next-tick';
 import { AbstractConnection } from './abstract-connection';
 
 export class P2PConnection extends AbstractConnection {
     private _peer: Peer;
     private _dataConnection?: DataConnection;
-    private _receiveListeners: ((data: any) => void)[];
-    private _disconnectListeners: (() => void)[];
+    private _receiveListener?: (data: any) => Promise<any>;
+    private _ee: EventEmitter;
+    private _isSendWaiting = false;
 
     constructor(peer: Peer) {
         super();
         this._peer = peer;
-        this._receiveListeners = [];
-        this._disconnectListeners = [];
+        this._ee = new EventEmitter();
     }
 
     //** Start connection to PeerID */
@@ -32,24 +34,25 @@ export class P2PConnection extends AbstractConnection {
         this._dataConnection = undefined;
     }
 
-    async send(data: any): Promise<void> {
-        if (!this._dataConnection) throw 'This connection is not active';
-
-        console.debug('>>>>>> ', data);
-        await this._dataConnection.send(data);
+    async send(data: any): Promise<any> {
+        nextTick(() => {
+            this._dataConnection?.send(data);
+        });
+        this._isSendWaiting = true;
+        const responseData = await once(this._ee, 'received');
+        this._isSendWaiting = false;
+        if (responseData && responseData.length > 0) return responseData[0];
+        return null;
     }
 
-    onReceive(fn: (data: any) => void): void {
-        this._receiveListeners.push(fn);
-    }
-
-    onDisconnected(fn: () => void): void {
-        this._disconnectListeners.push(fn);
+    onReceive(fn: (data: any) => Promise<any>): void {
+        this._receiveListener = fn;
     }
 
     private _connectListeners() {
         this._dataConnection?.on('data', (data) => {
-            this._handleReceive(data);
+            if (this._isSendWaiting) this._ee.emit('received', data);
+            else this._handleReceive(data);
         });
         this._dataConnection?.on('close', () => {
             this._handleDisconnected();
@@ -59,17 +62,13 @@ export class P2PConnection extends AbstractConnection {
         });
     }
 
-    private _handleReceive(data: any) {
-        console.debug('<<<<<< ', data);
-        for (const fn of this._receiveListeners) {
-            fn(data);
-        }
+    private async _handleReceive(data: any) {
+        if (!this._receiveListener) return;
+        const response = await this._receiveListener(data);
+        this._dataConnection?.send(response);
     }
 
     private _handleDisconnected() {
-        for (const fn of this._disconnectListeners) {
-            fn();
-        }
         this._dataConnection = undefined;
     }
 }

@@ -1,66 +1,155 @@
 import { AbstractBatchOperation } from 'abstract-level';
-import EventEmitter, { once } from 'events';
 import { Level } from 'level';
+import UUID from 'pure-uuid';
 import { AbstractConnection } from './connections/abstract-connection';
 import { ExportLog } from './interfaces/logged';
 import {
-    DiscoveryRequest,
-    DiscoveryResponse,
-    FetchRequest,
-    FetchResponse,
+    PULL_ACTION,
+    PULL_DISCOVERY_ACTION,
+    PULL_FETCH_ACTION,
+    PUSH_ACTION,
+    PUSH_DISCOVERY_ACTION,
+    PUSH_SEND_ACTION,
     PullData,
+    PullDiscoveryRequest,
+    PullDiscoveryResponse,
+    PullFetchRequest,
+    PullFetchResponse,
     PullRequest,
     PullResponse,
+    PushData,
+    PushDiscoveryRequest,
+    PushDiscoveryResponse,
+    PushRequest,
+    PushResponse,
+    PushSendRequest,
+    PushSendResponse,
+    Request,
 } from './interfaces/messages';
 import { LevelLogged } from './level-logged';
 import { getSequence } from './utils/sequence';
-import { nextTick } from 'process';
-import UUID from 'pure-uuid';
+
+interface PushInterface {
+    friendLevelId: string;
+    friendSequence: string;
+    newSequence?: string;
+    operations: AbstractBatchOperation<Level<string, any>, string, any>[];
+}
 
 export class SyncManager {
     private _db: LevelLogged;
     private _connection: AbstractConnection;
-    private _state: string;
-    private _ee: EventEmitter;
     private _intervalId?: any;
+    private _pushStatus?: PushInterface;
 
     constructor(db: LevelLogged, connection: AbstractConnection) {
         this._db = db;
         this._connection = connection;
-        this._state = 'WAIT_DISCOVERY';
-        this._connection.onReceive((data: any) => {
-            this._handleReceive(data);
+
+        this._connection.onReceive(async (data: any) => {
+            return await this._handleReceive(data);
         });
-        this._ee = new EventEmitter();
     }
 
-    async doPull(transaction?: string) {
-        if (this._state != 'WAIT_DISCOVERY')
-            throw 'Starting state not valid, maybe another process is in progress you need to complete it or abort';
-
+    /**
+     * Do a PULL Operation
+     * @param transaction The transaction of this Pull Action
+     */
+    async doPull(transaction?: string): Promise<void> {
         if (!transaction) transaction = new UUID(4).format('std');
-        nextTick(() => {
-            this._connection.send({ transaction } as DiscoveryRequest);
-            this._state = 'WAIT_START';
+
+        const friendsLevel = this._db.getFriendsLevel();
+
+        /////////////////////////////////////////////////////////// DISCOVERY
+        const discoveryRequest = { transaction, action: PULL_DISCOVERY_ACTION } as PullDiscoveryRequest;
+        const discoveryResponse = (await this._connection.send(discoveryRequest)) as PullDiscoveryResponse;
+
+        const friendLevelId = discoveryResponse.levelId;
+        const friendSequence = discoveryResponse.sequence;
+        const options = await this._getOptions(friendLevelId, friendSequence);
+
+        /////////////////////////////////////////////////////////// FETCH
+        const fetchRequest = {
+            transaction,
+            action: PULL_FETCH_ACTION,
+            options,
+        } as PullFetchRequest;
+        const fetchResponse = (await this._connection.send(fetchRequest)) as PullFetchResponse;
+
+        let friendLogs = fetchResponse.logs;
+
+        // Handle Logs
+        const { keyToTake, operations, newSequence } = await this._mergeLogs(friendLogs);
+
+        /////////////////////////////////////////////////////////// PULL
+        const pullRequest = {
+            transaction,
+            keys: Array.from(keyToTake),
+            action: PULL_ACTION,
+        } as PullRequest;
+        const pullResponse = (await this._connection.send(pullRequest)) as PullResponse;
+        for (const { key, value } of pullResponse.data) {
+            operations.push({
+                type: 'put',
+                key,
+                value,
+            });
+        }
+
+        operations.push({
+            type: 'put',
+            key: discoveryResponse.levelId,
+            value: friendSequence,
+            sublevel: friendsLevel,
         });
-        await once(this._ee, 'complete');
+
+        await this._db.directBatch(operations);
+        if (newSequence) this._db.setSequence(newSequence);
     }
 
-    // push is a pull, started from the peer that not initialized the connection
-    async doPush(transaction?: string) {
-        if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
-
+    /**
+     * Do a PUSH Operation
+     * @param transaction The transaction of this Push Action
+     */
+    async doPush(transaction?: string): Promise<void> {
         if (!transaction) transaction = new UUID(4).format('std');
-        nextTick(() => {
-            this._connection.send({ transaction, push: true } as DiscoveryRequest);
-            this._state = 'WAIT_PUSH_DISCOVERY'; // remain in discovery ( other type )
-        });
-        await once(this._ee, 'complete');
+
+        const logsLevel = this._db.getLogsLevel();
+
+        /////////////////////////////////////////////////////////// DISCOVERY
+        const discoveryRequest = {
+            transaction,
+            action: PUSH_DISCOVERY_ACTION,
+            sequence: this._db.sequence,
+            levelId: this._db.id,
+        } as PushDiscoveryRequest;
+        const discoveryResponse = (await this._connection.send(discoveryRequest)) as PushDiscoveryResponse;
+
+        const toExport = [] as ExportLog[];
+        for await (const [sequence, value] of logsLevel.iterator(discoveryResponse.options)) {
+            toExport.push({ sequence, value });
+        }
+
+        /////////////////////////////////////////////////////////// SEND
+        const sendRequest = { transaction, action: PUSH_SEND_ACTION, logs: toExport } as PushSendRequest;
+        const sendResponse = (await this._connection.send(sendRequest)) as PushSendResponse;
+
+        const result = [] as PushData[];
+        for (const key of sendResponse.keys) {
+            const value = await this._db.get(key);
+            result.push({ key, value });
+        }
+
+        /////////////////////////////////////////////////////////// PUSH
+        const pushRequest = { transaction, action: PUSH_ACTION, data: result } as PushRequest;
+        (await this._connection.send(pushRequest)) as PushResponse;
     }
 
+    /**
+     * Sync two level instances, if an interval is provided every <interval> a new Sync operation is done
+     * @param interval The interval
+     */
     async doSync(interval?: number) {
-        if (this._state != 'WAIT_DISCOVERY') throw 'Starting state not valid, maybe another process is in progress';
-
         if (!interval) {
             const transaction = new UUID(4).format('std');
             await this.doPull(transaction);
@@ -74,94 +163,50 @@ export class SyncManager {
         }
     }
 
+    /**
+     * Stop a Sync if it is running
+     */
     stopSync() {
         if (this._intervalId) clearInterval(this._intervalId);
         this._intervalId = undefined;
     }
 
+    /**
+     * @returns true if a sync is running
+     */
     isScheduled() {
         return this._intervalId ? true : false;
     }
 
-    _handleReceive(data: any) {
-        switch (this._state) {
-            case 'WAIT_PUSH_DISCOVERY':
-            case 'WAIT_DISCOVERY': {
-                this._waitDiscovery(data);
-                break;
-            }
-            case 'WAIT_START': {
-                this._waitStart(data);
-                break;
-            }
-            case 'WAIT_FETCH': {
-                this._waitFetch(data);
-                break;
-            }
-            case 'WAIT_FETCH_RESPONSE': {
-                this._waitFetchResponse(data);
-                break;
-            }
-            case 'WAIT_PULL': {
-                this._waitPull(data);
-                break;
-            }
-            case 'WAIT_PULL_RESPONSE': {
-                this._waitPullResponse(data);
-                break;
-            }
-            default: {
-                console.error('Unkown state');
-            }
+    private async _handleReceive(data: any): Promise<any> {
+        const request = data as Request;
+        switch (request.action) {
+            /// PULL
+            case PULL_ACTION:
+                return await this._waitPull(data as PullRequest);
+            case PULL_DISCOVERY_ACTION:
+                return await this._waitPullDiscovery(data as PullDiscoveryRequest);
+            case PULL_FETCH_ACTION:
+                return await this._waitPullFetch(data as PullFetchRequest);
+            /// PUSH
+            case PUSH_ACTION:
+                return await this._waitPush(data as PushRequest);
+            case PUSH_DISCOVERY_ACTION:
+                return await this._waitPushDiscovery(data as PushDiscoveryRequest);
+            case PUSH_SEND_ACTION:
+                return await this._waitPushSend(data as PushSendRequest);
         }
     }
 
-    private async _waitDiscovery(data: any) {
-        const discoveryRequest = data as DiscoveryRequest;
-        if (discoveryRequest.push) {
-            this._connection.send({});
-            this._state = 'WAIT_START';
-        } else {
-            this._connection.send({
-                sequence: this._db.sequence,
-                levelId: this._db.id,
-            } as DiscoveryResponse);
-            this._state = 'WAIT_FETCH';
-        }
+    ///////////////////////////////////// PULL
+    private async _waitPullDiscovery(_discoveryRequest: PullDiscoveryRequest) {
+        return {
+            sequence: this._db.sequence,
+            levelId: this._db.id,
+        } as PullDiscoveryResponse;
     }
 
-    private async _waitStart(data: any) {
-        const discoveryResponse = data as DiscoveryResponse;
-        const friendsLevel = this._db.getFriendsLevel();
-
-        // get current friend position
-        const friendSequence = discoveryResponse.sequence;
-        let gt = undefined as string | undefined;
-        try {
-            gt = await friendsLevel.get(discoveryResponse.levelId);
-        } catch (error) {
-            console.debug(`Friend ${discoveryResponse.levelId} not found`);
-        }
-
-        // create options for logs to take
-        let options = { lte: friendSequence } as object;
-        if (gt) {
-            options = { ...options, gt };
-        }
-
-        // move friend up
-        await friendsLevel.put(discoveryResponse.levelId, friendSequence);
-
-        nextTick(() => {
-            this._connection.send({
-                options,
-            } as FetchRequest);
-        });
-        this._state = 'WAIT_FETCH_RESPONSE';
-    }
-
-    private async _waitFetch(data: any) {
-        const fetchRequest = data as FetchRequest;
+    private async _waitPullFetch(fetchRequest: PullFetchRequest): Promise<PullFetchResponse> {
         const logsLevel = this._db.getLogsLevel();
 
         const toExport = [] as ExportLog[];
@@ -169,25 +214,113 @@ export class SyncManager {
             toExport.push({ sequence, value });
         }
 
-        nextTick(() => {
-            this._connection.send({
-                logs: toExport,
-            } as FetchResponse);
-        });
-        this._state = 'WAIT_PULL';
+        return {
+            transaction: fetchRequest.transaction,
+            logs: toExport,
+        };
     }
 
-    private async _waitFetchResponse(data: any) {
-        const fetchResponse = data as FetchResponse;
+    private async _waitPull(pullRequest: PullRequest): Promise<PullResponse> {
+        const result = [] as PullData[];
+        for (const key of pullRequest.keys) {
+            const value = await this._db.get(key);
+            result.push({ key, value });
+        }
+
+        return {
+            transaction: pullRequest.transaction,
+            data: result,
+        };
+    }
+
+    ///////////////////////////////////// PUSH
+    private async _waitPushDiscovery(discoveryRequest: PushDiscoveryRequest): Promise<PushDiscoveryResponse> {
+        const friendLevelId = discoveryRequest.levelId;
+        const friendSequence = discoveryRequest.sequence;
+        const options = await this._getOptions(friendLevelId, friendSequence);
+
+        this._pushStatus = {
+            friendLevelId,
+            friendSequence,
+            operations: [],
+        };
+
+        return {
+            transaction: discoveryRequest.transaction,
+            options,
+        };
+    }
+
+    private async _waitPushSend(sendRequest: PushSendRequest): Promise<PushSendResponse> {
+        let friendLogs = sendRequest.logs;
+
+        // Handle Logs
+        const { keyToTake, operations, newSequence } = await this._mergeLogs(friendLogs);
+
+        this._pushStatus!.newSequence = newSequence;
+        this._pushStatus!.operations = operations;
+
+        return {
+            transaction: sendRequest.transaction,
+            keys: Array.from(keyToTake),
+        };
+    }
+
+    private async _waitPush(pushRequest: PushRequest): Promise<PushResponse> {
+        const friendsLevel = this._db.getFriendsLevel();
+        const operations = this._pushStatus?.operations || [];
+
+        for (const { key, value } of pushRequest.data) {
+            operations.push({
+                type: 'put',
+                key,
+                value,
+            });
+        }
+
+        operations.push({
+            type: 'put',
+            key: this._pushStatus!.friendLevelId,
+            value: this._pushStatus!.friendSequence,
+            sublevel: friendsLevel,
+        });
+
+        await this._db.directBatch(operations);
+        if (this._pushStatus?.newSequence) this._db.setSequence(this._pushStatus?.newSequence);
+        return {
+            transaction: pushRequest.transaction,
+        };
+    }
+
+    private async _getOptions(friendLevelId: string, friendSequence: string) {
+        const friendsLevel = this._db.getFriendsLevel();
+
+        // get current friend position
+        let gt = undefined as string | undefined;
+        try {
+            gt = await friendsLevel.get(friendLevelId);
+        } catch (error) {
+            console.debug(`Friend ${friendLevelId} not found`);
+        }
+
+        // create options for logs to take
+        let options = { lte: friendSequence } as object;
+        if (gt) {
+            options = { ...options, gt };
+        }
+        return options;
+    }
+
+    private async _mergeLogs(friendLogs: ExportLog[]) {
         const logsLevel = this._db.getLogsLevel();
         const indexLevel = this._db.getIndexLevel();
 
-        let friendLogs = fetchResponse.logs;
-
-        // key to request on next step
         let keyToTake = new Set<string>();
         let keyToDelete = new Set<string>();
 
+        // create operations, first friend logs after mylogs
+        let newSequence;
+        const operations = [] as AbstractBatchOperation<Level<string, any>, string, any>[];
         if (friendLogs.length > 0) {
             const baseSequence = friendLogs[0].sequence;
             const conflictKeys = new Set<string>();
@@ -210,7 +343,6 @@ export class SyncManager {
 
             // changedKeys --> All key changed
             // conflictKeys --> All key changed with conflict
-
             // remove all conflict keys from myLogs
             if (conflictKeys.size > 0) {
                 myLogs = myLogs.filter((item) => !conflictKeys.has(item.value.key));
@@ -221,10 +353,7 @@ export class SyncManager {
                 return a.value.timestamp - b.value.timestamp;
             }) as ExportLog[];
 
-            let newSequence = baseSequence;
-            // create operations, first friend logs after mylogs
-            const operations = [] as AbstractBatchOperation<Level<string, any>, string, any>[];
-
+            newSequence = baseSequence;
             for (let i = 0; i < allLogs.length; i++) {
                 const log = allLogs[i];
                 operations.push({
@@ -242,8 +371,6 @@ export class SyncManager {
                 // increate sequence if not last log
                 if (i + 1 < allLogs.length) newSequence = getSequence(newSequence);
             }
-            await this._db.directBatch(operations);
-            this._db.setSequence(newSequence);
 
             // if log is a PUT, include value to keyToTake.. otherwise delete it from keyToTake
             for (const log of friendLogs) {
@@ -256,44 +383,11 @@ export class SyncManager {
 
         // delete keys if necessary
         for (const key of keyToDelete) {
-            await this._db.directDel(key);
+            operations.push({
+                type: 'del',
+                key,
+            });
         }
-
-        nextTick(() => {
-            this._connection.send({
-                keys: Array.from(keyToTake),
-            } as PullRequest);
-        });
-        this._state = 'WAIT_PULL_RESPONSE';
-    }
-
-    private async _waitPull(data: any) {
-        const pullRequest = data as PullRequest;
-
-        const result = [] as PullData[];
-        for (const key of pullRequest.keys) {
-            const value = await this._db.get(key);
-            result.push({ key, value });
-        }
-
-        nextTick(() => {
-            this._connection.send({
-                data: result,
-            } as PullResponse);
-        });
-        this._state = 'WAIT_DISCOVERY';
-        this._ee.emit('complete', {});
-    }
-
-    private async _waitPullResponse(data: any) {
-        const pullResponse = data as PullResponse;
-        for (const { key, value } of pullResponse.data) {
-            await this._db.directPut(key, value);
-        }
-        nextTick(() => {
-            this._connection.send({});
-        });
-        this._state = 'WAIT_DISCOVERY';
-        this._ee.emit('complete', {});
+        return { keyToTake, operations, newSequence };
     }
 }

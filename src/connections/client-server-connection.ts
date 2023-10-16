@@ -1,6 +1,4 @@
-import EventEmitter, { once } from 'events';
 import { AbstractConnection } from './abstract-connection';
-import { nextTick } from '../utils/next-tick';
 
 /**
  * CLIENT ->  SEND than RECEIVE
@@ -8,29 +6,18 @@ import { nextTick } from '../utils/next-tick';
  */
 export class ClientConnection extends AbstractConnection {
     private _sender: (data: any) => Promise<any>;
-    private _receiveListeners: ((data: any) => void)[];
 
     constructor(sender: (data: any) => Promise<any>) {
         super();
         this._sender = sender;
-        this._receiveListeners = [];
     }
 
-    async send(data: any): Promise<void> {
-        console.debug('>>>>>> ', data);
-        const response = await this._sender(data);
-        this._handleReceive(response);
+    async send(data: any): Promise<any> {
+        return await this._sender(data);
     }
 
-    onReceive(fn: (data: any) => void): void {
-        this._receiveListeners.push(fn);
-    }
-
-    private _handleReceive(data: any) {
-        console.debug('<<<<<< ', data);
-        for (const fn of this._receiveListeners) {
-            fn(data);
-        }
+    onReceive(_fn: (data: any) => Promise<any>): void {
+        // do nothing
     }
 }
 
@@ -39,37 +26,29 @@ export class ClientConnection extends AbstractConnection {
  * Your server when receive connections need to call the "receiver" method on this class
  */
 export class ServerConnection extends AbstractConnection {
-    private _ee: EventEmitter;
-    private _receiveListeners: ((data: any) => void)[];
+    private _receiveListener?: (data: any) => Promise<any>;
 
     constructor() {
         super();
-        this._ee = new EventEmitter();
-        this._receiveListeners = [];
     }
 
     async incomingReceive(data: any) {
-        nextTick(() => {
-            this._handleReceive(data);
-        });
-        const [dataR] = await once(this._ee, 'send');
-        return dataR;
+        return await this._handleReceive(data);
     }
 
-    async send(data: any): Promise<void> {
-        console.debug('>>>>>> ', data);
-        this._ee.emit('send', data);
+    async send(_data: any): Promise<void> {
+        // do nothing
     }
 
-    onReceive(fn: (data: any) => void): void {
-        this._receiveListeners.push(fn);
+    onReceive(fn: (data: any) => Promise<any>): void {
+        this._receiveListener = fn;
     }
 
     // run receive in async
-    private _handleReceive(data: any) {
-        console.debug('<<<<<< ', data);
-        for (const fn of this._receiveListeners) {
-            fn(data);
+    private async _handleReceive(data: any): Promise<any> {
+        if (this._receiveListener) {
+            return await this._receiveListener(data);
         }
+        throw 'Missing receive listener';
     }
 }
