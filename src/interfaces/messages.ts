@@ -47,7 +47,7 @@ export interface PullRequest extends Request {
 
 export interface PullData {
     key: string;
-    value: any;
+    value: number[];
 }
 
 export interface PullResponse extends Response {
@@ -83,7 +83,7 @@ export const PUSH_ACTION = 'push';
 
 export interface PushData {
     key: string;
-    value: any;
+    value: number[];
 }
 
 export interface PushRequest extends Request {

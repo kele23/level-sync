@@ -92,7 +92,8 @@ export class SyncManager {
             operations.push({
                 type: 'put',
                 key,
-                value,
+                value: Uint8Array.from(value),
+                valueEncoding: 'view',
             });
         }
 
@@ -136,8 +137,11 @@ export class SyncManager {
 
         const result = [] as PushData[];
         for (const key of sendResponse.keys) {
-            const value = await this._db.get(key);
-            result.push({ key, value });
+            const value = await this._db.get<string, Uint8Array>(key, { valueEncoding: 'view' });
+            result.push({
+                key,
+                value: Array.from(value),
+            });
         }
 
         /////////////////////////////////////////////////////////// PUSH
@@ -223,8 +227,11 @@ export class SyncManager {
     private async _waitPull(pullRequest: PullRequest): Promise<PullResponse> {
         const result = [] as PullData[];
         for (const key of pullRequest.keys) {
-            const value = await this._db.get(key);
-            result.push({ key, value });
+            const value = await this._db.get<string, Uint8Array>(key, { valueEncoding: 'view' });
+            result.push({
+                key,
+                value: Array.from(value),
+            });
         }
 
         return {
@@ -274,7 +281,8 @@ export class SyncManager {
             operations.push({
                 type: 'put',
                 key,
-                value,
+                value: Uint8Array.from(value),
+                valueEncoding: 'view',
             });
         }
 
