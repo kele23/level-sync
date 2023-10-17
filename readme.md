@@ -2,7 +2,8 @@
 
 _!Repository under development!_
 
-Sync multiple LevelDB instances
+Sync multiple LevelDB instances.
+It works on both browser and nodejs!!!
 
 ## Usage
 
