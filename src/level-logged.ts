@@ -142,6 +142,15 @@ export class LevelLogged extends AbstractLevel<any, string, any> {
         // for each operation
         for (const operation of operations) {
             const key = operation.key;
+            let size = 0;
+            if (operation.type == 'put') {
+                if (operation.value instanceof Uint8Array) {
+                    size = operation.value.length;
+                } else {
+                    const enc = new TextEncoder();
+                    size = enc.encode(JSON.stringify(operation.value)).length;
+                }
+            }
 
             // increase sequence
             this._sequence = getSequence(this._sequence);
@@ -149,6 +158,8 @@ export class LevelLogged extends AbstractLevel<any, string, any> {
                 timestamp: new Date().getTime(),
                 type: operation.type,
                 key: operation.key,
+                uuid: new UUID(4).format('std'),
+                size,
             };
 
             const indexValue = this._sequence;

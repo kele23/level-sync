@@ -2,7 +2,7 @@ import { AbstractBatchOperation } from 'abstract-level';
 import { Level } from 'level';
 import UUID from 'pure-uuid';
 import { AbstractConnection } from './connections/abstract-connection';
-import { ExportLog } from './interfaces/logged';
+import { ExportLog, LogRecord } from './interfaces/logged';
 import {
     PULL_ACTION,
     PULL_DISCOVERY_ACTION,
@@ -27,6 +27,7 @@ import {
     Request,
 } from './interfaces/messages';
 import { LevelLogged } from './level-logged';
+import { base64Decode, base64Encode } from './utils/base64';
 import { getSequence } from './utils/sequence';
 
 interface PushInterface {
@@ -92,7 +93,7 @@ export class SyncManager {
             operations.push({
                 type: 'put',
                 key,
-                value: Uint8Array.from(value),
+                value: base64Decode(value),
                 valueEncoding: 'view',
             });
         }
@@ -135,16 +136,16 @@ export class SyncManager {
         const sendRequest = { transaction, action: PUSH_SEND_ACTION, logs: toExport } as PushSendRequest;
         const sendResponse = (await this._connection.send(sendRequest)) as PushSendResponse;
 
+        /////////////////////////////////////////////////////////// PUSH
         const result = [] as PushData[];
         for (const key of sendResponse.keys) {
             const value = await this._db.get<string, Uint8Array>(key, { valueEncoding: 'view' });
             result.push({
                 key,
-                value: Array.from(value),
+                value: base64Encode(value),
             });
         }
 
-        /////////////////////////////////////////////////////////// PUSH
         const pushRequest = { transaction, action: PUSH_ACTION, data: result } as PushRequest;
         (await this._connection.send(pushRequest)) as PushResponse;
     }
@@ -230,7 +231,7 @@ export class SyncManager {
             const value = await this._db.get<string, Uint8Array>(key, { valueEncoding: 'view' });
             result.push({
                 key,
-                value: Array.from(value),
+                value: base64Encode(value),
             });
         }
 
@@ -281,7 +282,7 @@ export class SyncManager {
             operations.push({
                 type: 'put',
                 key,
-                value: Uint8Array.from(value),
+                value: base64Decode(value),
                 valueEncoding: 'view',
             });
         }
@@ -331,11 +332,11 @@ export class SyncManager {
         const operations = [] as AbstractBatchOperation<Level<string, any>, string, any>[];
         if (friendLogs.length > 0) {
             const baseSequence = friendLogs[0].sequence;
-            const conflictKeys = new Set<string>();
+            const conflictKeys = new Map<string, boolean>();
 
-            const changedKeys = new Set();
+            const changedKeys = new Map<string, LogRecord>();
             for (const friendLog of friendLogs) {
-                changedKeys.add(friendLog.value.key);
+                changedKeys.set(friendLog.value.key, friendLog.value);
             }
 
             // check conflicts
@@ -343,14 +344,14 @@ export class SyncManager {
             for await (const [sequence, value] of logsLevel.iterator({ gte: baseSequence })) {
                 const key = value.key;
                 if (changedKeys.has(key)) {
-                    conflictKeys.add(key);
+                    conflictKeys.set(key, changedKeys.get(key)?.uuid == value.uuid);
                 }
 
                 myLogs.push({ sequence, value });
             }
 
-            // changedKeys --> All key changed
-            // conflictKeys --> All key changed with conflict
+            // changedKeys --> All key changed + last friend log
+            // conflictKeys --> All key changed with conflict + last mine log
             // remove all conflict keys from myLogs
             if (conflictKeys.size > 0) {
                 myLogs = myLogs.filter((item) => !conflictKeys.has(item.value.key));
@@ -358,7 +359,8 @@ export class SyncManager {
 
             // re-organize logs
             const allLogs = [...friendLogs, ...myLogs].sort((a, b) => {
-                return a.value.timestamp - b.value.timestamp;
+                const order = a.sequence.localeCompare(b.sequence);
+                return order != 0 ? order : a.value.timestamp - b.value.timestamp;
             }) as ExportLog[];
 
             newSequence = baseSequence;
@@ -386,7 +388,8 @@ export class SyncManager {
                 else keyToTake.delete(log.value.key);
             }
 
-            keyToDelete = new Set<string>([...conflictKeys].filter((item) => !keyToTake.has(item)));
+            keyToDelete = new Set<string>([...conflictKeys.keys()].filter((item) => !keyToTake.has(item)));
+            keyToTake = new Set<string>([...keyToTake].filter((item) => !conflictKeys.get(item))); // remove equals hash
         }
 
         // delete keys if necessary
