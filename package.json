@@ -1,6 +1,8 @@
 {
-    "name": "level-sync",
+    "name": "@kele23/level-sync",
     "version": "0.1.0",
+    "license" : "MIT",
+    "url" : "https://github.com/kele23/level-sync",
     "type": "module",
     "main": "./dist/level-sync.umd.cjs",
     "module": "./dist/level-sync.js",
