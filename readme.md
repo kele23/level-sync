@@ -70,8 +70,8 @@ As soon as possible we will also try to implement a custom management.
 
 ## Next Steps
 
--   [ ] Verify AbstractLevel implementation
--   [ ] Create test suite
--   [ ] Versioning
--   [ ] Log cleaning
--   [ ] Reduce communication overhead
+-   [ ] Verify AbstractLevel implementation & Create test suite ( found the correct test framework )
+-   [ ] Versioning ( mantain old versions of elements if is possible )
+-   [ ] Log cleaning ( purge too old logs )
+-   [X] Reduce communication overhead
+-   [ ] Batch communication & batch commit
