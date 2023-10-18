@@ -119,8 +119,17 @@ export class LevelLogged extends AbstractLevel<any, string, any> {
         this.batch([op], callback);
     }
 
-    _clear(_options: AbstractClearOptions<string>, _callback: NodeCallback<void>) {
-        throw 'Operation, not already supported';
+    _clear(options: AbstractClearOptions<string>, callback: NodeCallback<void>) {
+        (async () => {
+            try {
+                for await (const key of this.keys(options)) {
+                    await this.del(key);
+                }
+                callback(null);
+            } catch (error) {
+                callback(error as Error);
+            }
+        })();
     }
 
     _batch(
